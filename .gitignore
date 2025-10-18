@@ -1,0 +1,34 @@
+# Node.js dependencies
+node_modules/
+
+# Build output
+dist/
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# IDE-specific files
+.vscode/
+.idea/
+.DS_Store
+
+# Lock files
+pnpm-lock.yaml
+yarn.lock
+package-lock.json
+
+# Coverage reports
+coverage/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Rollup cache
+.rollup.cache/
+
+# Debugging files
+*.map
