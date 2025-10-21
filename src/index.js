@@ -22,13 +22,12 @@ class CarbonCutSDK {
     this.pingTracker = null;
     this.pageViewTracker = null;
     this.browserListeners = null;
-    this.googleAds = null;
     this.autoInitAttempted = false;
   }
 
   
   getScriptConfig() {
-   
+    if (typeof document === 'undefined') return null;
 
     const scripts = document.getElementsByTagName('script');
     let scriptConfig = null;
@@ -37,9 +36,17 @@ class CarbonCutSDK {
       const src = script.getAttribute('src');
       
       if (src && (src.includes('carboncut.min.js') || src.includes('carboncut.js'))) {
+        // Get base URL from data attribute
+        let apiUrl = script.getAttribute('data-api-url') || 'http://127.0.0.1:8000/api/v1/events/track/';
+        
+        // Ensure trailing slash
+        if (!apiUrl.endsWith('/')) {
+          apiUrl += '/';
+        }
+        
         scriptConfig = {
           trackerToken: script.getAttribute('data-token') || script.getAttribute('data-tracker-token'),
-          apiUrl: script.getAttribute('data-api-url') || 'http://127.0.0.1:8000/api/v1/events/',
+          apiUrl: apiUrl,
           debug: script.getAttribute('data-debug') === 'true',
           domain: script.getAttribute('data-domain') || window.location.hostname,
           useWorker: script.getAttribute('data-use-worker') !== 'false'
@@ -86,32 +93,27 @@ class CarbonCutSDK {
       return false;
     }
 
-   
     if (!this.config.init(options)) {
       return false;
     }
 
-   
     this.logger.setDebug(this.config.get('debug'));
 
-   
     if (this.config.get('respectDoNotTrack') && navigator.doNotTrack === '1') {
       this.logger.warn('Do Not Track is enabled, tracking disabled');
       return false;
     }
 
-   
     this.session = new Session(this.config, this.logger);
     
-   
     const useWorker = this.config.get('useWorker') !== false;
     
     if (useWorker && typeof Worker !== 'undefined') {
       this.transport = new ApiWorkerTransport(this.config, this.logger);
-      this.logger.log('Using Web Worker for event processing');
+      this.logger.log('Using Web Worker for v2 event processing');
     } else {
       this.transport = new ApiTransport(this.config, this.logger);
-      this.logger.log('Using main thread for event processing');
+      this.logger.log('Using main thread for v2 event processing');
     }
     
     this.eventTracker = new EventTracker(this.config, this.session, this.transport, this.logger);
@@ -127,35 +129,18 @@ class CarbonCutSDK {
       this.logger
     );
 
-
-   
     this.session.start();
-
-   
     this.eventTracker.send('session_start', getBrowserMetadata());
-
-   
     this.pingTracker.start();
-
-   
     this.browserListeners.setup();
-
-   
     this.state.set('isInitialized', true);
 
-    this.logger.log('CarbonCut SDK initialized successfully', {
+    this.logger.log('CarbonCut SDK v2 initialized successfully', {
       sessionId: this.session.getId(),
       trackerToken: this.config.get('trackerToken'),
-      workerEnabled: useWorker
+      workerEnabled: useWorker,
+      apiVersion: 'v2'
     });
-
-   
-    if (this.config.get('autoAuth')) {
-     
-      setTimeout(() => {
-        this.initiateGoogleAdsAuth();
-      }, 0);
-    }
 
     return true;
   }
@@ -197,7 +182,9 @@ class CarbonCutSDK {
       trackerToken: this.config.get('trackerToken'),
       timeSpent: this.state.get('timeSpent'),
       isInitialized: this.state.get('isInitialized'),
-      queueSize: this.transport?.getQueueSize() || 0
+      queueSize: this.transport?.getQueueSize() || 0,
+      apiVersion: 'v2',
+      utmParams: this.eventTracker?.utmParams || null
     };
   }
 
@@ -226,13 +213,11 @@ class CarbonCutSDK {
 const carbonCut = new CarbonCutSDK();
 
 if (typeof document !== 'undefined') {
- 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
       carbonCut.autoInit();
     }, { once: true });
   } else {
-   
     carbonCut.autoInit();
   }
 }
