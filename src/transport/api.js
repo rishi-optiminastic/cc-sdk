@@ -1,4 +1,3 @@
-
 export class ApiTransport {
   constructor(config, logger) {
     this.config = config;
@@ -11,7 +10,6 @@ export class ApiTransport {
     }
   }
 
-  
   setupOnlineListener() {
     window.addEventListener('online', () => {
       this.isOnline = true;
@@ -25,7 +23,6 @@ export class ApiTransport {
     });
   }
 
-  
   async send(payload) {
     if (!this.isOnline) {
       this.logger.warn('Offline, queueing event');
@@ -36,7 +33,6 @@ export class ApiTransport {
     const apiUrl = this.config.get('apiUrl');
     
     try {
-     
       if (this.shouldUseSendBeacon(payload.event)) {
         const success = this.sendViaBeacon(apiUrl, payload);
         if (success) {
@@ -45,9 +41,8 @@ export class ApiTransport {
         }
       }
 
-     
-      await this.sendViaFetch(apiUrl, payload);
-      this.logger.log('Event sent via fetch:', payload.event);
+      const response = await this.sendViaFetch(apiUrl, payload);
+      this.logger.log('Event sent via fetch:', payload.event, 'Status:', response.status);
       return true;
 
     } catch (error) {
@@ -57,7 +52,6 @@ export class ApiTransport {
     }
   }
 
-  
   sendViaBeacon(url, payload) {
     if (typeof navigator === 'undefined' || !navigator.sendBeacon) {
       return false;
@@ -74,33 +68,44 @@ export class ApiTransport {
     }
   }
 
-  
   async sendViaFetch(url, payload) {
-    this.logger.log('Sending via fetch to:', url, payload);
+    if (!url.endsWith('/')) {
+      url = url + '/';
+    }
+    
+    this.logger.log('Sending payload to:', url, payload);
     
     const response = await fetch(url, {
-      method: 'POST',
+      method: 'POST',  // Explicitly set POST
       headers: {
         'Content-Type': 'application/json',
         'X-Tracker-Token': this.config.get('trackerToken')
       },
       body: JSON.stringify(payload),
-      keepalive: true
+      keepalive: true,
+      redirect: 'error'  // Don't follow redirects that might change method
     });
 
-    if (!response.ok) {
+    // Handle responses
+    if (response.status === 202 || response.status === 200) {
+      return response;
+    } else if (response.status === 500) {
+      // Parse error details
+      try {
+        const errorData = await response.json();
+        throw new Error(`API Error: ${errorData.message || 'Unknown error'}`);
+      } catch (parseError) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+    } else {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
-
-    return response;
   }
 
-  
   shouldUseSendBeacon(eventType) {
     return ['session_end', 'page_unload'].includes(eventType);
   }
 
-  
   async flushQueue() {
     if (this.queue.length === 0) return;
 
@@ -111,13 +116,11 @@ export class ApiTransport {
     for (const payload of queue) {
       const success = await this.send(payload);
       if (!success) {
-       
         this.queue.push(payload);
       }
     }
   }
 
-  
   getQueueSize() {
     return this.queue.length;
   }

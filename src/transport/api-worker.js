@@ -1,4 +1,3 @@
-
 export class ApiWorkerTransport {
   constructor(config, logger) {
     this.config = config;
@@ -14,32 +13,26 @@ export class ApiWorkerTransport {
     }
   }
 
-  
   checkWorkerSupport() {
     return typeof Worker !== 'undefined';
   }
 
-  
   initWorker() {
     try {
-     
       const workerCode = this.getWorkerCode();
       const blob = new Blob([workerCode], { type: 'application/javascript' });
       const workerUrl = URL.createObjectURL(blob);
       
       this.worker = new Worker(workerUrl);
       
-     
       this.worker.addEventListener('message', (event) => {
         this.handleWorkerMessage(event.data);
       });
       
-     
       this.worker.addEventListener('error', (error) => {
         this.logger.error('Worker error:', error);
       });
       
-     
       this.worker.postMessage({
         type: 'INIT',
         payload: {
@@ -50,20 +43,16 @@ export class ApiWorkerTransport {
         }
       });
       
-     
       this.setupOnlineListener();
       
-      this.logger.log('Web Worker initialized for event processing');
+      this.logger.log('Web Worker initialized for v2 event processing');
     } catch (error) {
       this.logger.error('Failed to initialize worker:', error);
       this.worker = null;
     }
   }
 
-  
   getWorkerCode() {
-   
-   
     return `
       let config = null;
       let eventQueue = [];
@@ -119,17 +108,29 @@ export class ApiWorkerTransport {
         eventQueue = [];
         
         try {
-          const response = await fetch(config.apiUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Tracker-Token': config.trackerToken
-            },
-            body: JSON.stringify({ events: batch, batch: true }),
-            keepalive: true
-          });
-          
-          if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
+          // Send individual events
+          for (const event of batch) {
+            // Ensure URL always has trailing slash
+            let url = config.apiUrl;
+            if (!url.endsWith('/')) {
+              url = url + '/';
+            }
+            
+            const response = await fetch(url, {
+              method: 'POST',  // Explicitly set POST
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Tracker-Token': config.trackerToken
+              },
+              body: JSON.stringify(event),
+              keepalive: true,
+              redirect: 'error'  // Don't follow redirects
+            });
+            
+            if (response.status !== 202 && response.status !== 200) {
+              throw new Error(\`HTTP \${response.status}\`);
+            }
+          }
           
           self.postMessage({ type: 'FLUSH_SUCCESS', count: batch.length });
         } catch (error) {
@@ -140,17 +141,16 @@ export class ApiWorkerTransport {
     `;
   }
 
-  
   handleWorkerMessage(data) {
     const { type, count, error, size } = data;
     
     switch (type) {
       case 'INIT_SUCCESS':
-        this.logger.log('Worker ready');
+        this.logger.log('Worker ready for v2 API');
         break;
       
       case 'FLUSH_SUCCESS':
-        this.logger.log(`Worker flushed ${count} events`);
+        this.logger.log(`Worker flushed ${count} v2 events`);
         break;
       
       case 'FLUSH_ERROR':
@@ -163,7 +163,6 @@ export class ApiWorkerTransport {
     }
   }
 
-  
   setupOnlineListener() {
     window.addEventListener('online', () => {
       this.worker?.postMessage({ type: 'ONLINE' });
@@ -174,10 +173,8 @@ export class ApiWorkerTransport {
     });
   }
 
-  
   async send(payload) {
     if (!this.worker) {
-     
       return this.sendDirect(payload);
     }
     
@@ -189,7 +186,6 @@ export class ApiWorkerTransport {
     return true;
   }
 
-  
   async sendDirect(payload) {
     try {
       const response = await fetch(this.config.get('apiUrl'), {
@@ -202,19 +198,17 @@ export class ApiWorkerTransport {
         keepalive: true
       });
       
-      return response.ok;
+      return response.status === 202;
     } catch (error) {
       this.logger.error('Direct send failed:', error);
       return false;
     }
   }
 
-  
   async flushQueue() {
     this.worker?.postMessage({ type: 'FLUSH_QUEUE' });
   }
 
-  
   getQueueSize() {
     if (!this.worker) return 0;
     
@@ -222,7 +216,6 @@ export class ApiWorkerTransport {
     return this.queueSize;
   }
 
-  
   terminate() {
     if (this.worker) {
       this.worker.terminate();
