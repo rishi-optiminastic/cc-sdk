@@ -37,7 +37,7 @@ class CarbonCutSDK {
       
       if (src && (src.includes('carboncut.min.js') || src.includes('carboncut.js'))) {
         // Get base URL from data attribute
-        let apiUrl = script.getAttribute('data-api-url') || 'http://127.0.0.1:8000/api/v1/events/track/';
+        let apiUrl = script.getAttribute('data-api-url') || 'http://127.0.0.1:8000/api/v1/events/';
         
         // Ensure trailing slash
         if (!apiUrl.endsWith('/')) {

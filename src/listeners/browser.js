@@ -1,5 +1,3 @@
-
-
 export class BrowserListeners {
   constructor(config, state, session, eventTracker, pingTracker, pageViewTracker, logger) {
     this.config = config;
@@ -11,19 +9,19 @@ export class BrowserListeners {
     this.logger = logger;
   }
 
-  
   setup() {
     if (typeof window === 'undefined') return;
 
     this.setupUnloadListener();
     this.setupVisibilityListener();
     
+    this.setupClickTracking();
+    
     if (this.config.get('autoTrack')) {
       this.setupNavigationListeners();
     }
   }
 
-  
   setupUnloadListener() {
     window.addEventListener('beforeunload', () => {
       this.pingTracker.stop();
@@ -35,7 +33,6 @@ export class BrowserListeners {
     });
   }
 
-  
   setupVisibilityListener() {
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
@@ -48,7 +45,48 @@ export class BrowserListeners {
     });
   }
 
-  
+  setupClickTracking() {
+    document.addEventListener('click', (e) => {
+      const target = e.target;
+      
+      const elementInfo = {
+        tag: target.tagName.toLowerCase(),
+        id: target.id || null,
+        class: target.className || null,
+        text: target.innerText?.substring(0, 100) || null,
+        href: target.href || null
+      };
+
+      if (target.tagName === 'BUTTON' || target.closest('button')) {
+        this.eventTracker.send('button_click', {
+          ...elementInfo,
+          button_type: target.type || 'button'
+        });
+        this.logger.log('Button click tracked:', elementInfo);
+      }
+      
+      else if (target.tagName === 'A' || target.closest('a')) {
+        this.eventTracker.send('custom_event', {
+          event_name: 'link_click',
+          ...elementInfo,
+          external: target.hostname !== window.location.hostname
+        });
+        this.logger.log('Link click tracked:', elementInfo);
+      }
+      
+      else if (target.tagName === 'INPUT' && target.type === 'submit') {
+        this.eventTracker.send('form_submit', {
+          ...elementInfo,
+          form_id: target.form?.id || null,
+          form_name: target.form?.name || null
+        });
+        this.logger.log('Form submit tracked:', elementInfo);
+      }
+    }, true);
+
+    this.logger.log('Automatic click tracking enabled');
+  }
+
   setupNavigationListeners() {
     this.state.set('lastPath', window.location.pathname);
 
@@ -61,10 +99,8 @@ export class BrowserListeners {
       }
     };
 
-   
     window.addEventListener('popstate', checkPathChange);
 
-   
     const originalPushState = history.pushState;
     const originalReplaceState = history.replaceState;
 

@@ -6,7 +6,7 @@ export class Config {
     this.defaults = {
       trackerToken: null,
       // Ensure trailing slash is always present
-      apiUrl: 'http://127.0.0.1:8000/api/v1/events/track/', 
+      apiUrl: 'http://127.0.0.1:8000/api/v1/events/', 
       sessionId: null,
       pingInterval: 15000,
       debug: false,
