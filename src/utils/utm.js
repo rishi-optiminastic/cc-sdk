@@ -10,9 +10,9 @@ export function getUTMParams() {
   const urlParams = new URLSearchParams(window.location.search);
   
   return {
-    utm_campaign: urlParams.get('utm_campaign') || getSessionStorage('utm_campaign') || 'direct',
-    utm_source: urlParams.get('utm_source') || getSessionStorage('utm_source') || 'direct',
-    utm_medium: urlParams.get('utm_medium') || getSessionStorage('utm_medium') || 'none',
+    utm_campaign: urlParams.get('utm_campaign') || getSessionStorage('utm_campaign') || '',
+    utm_source: urlParams.get('utm_source') || getSessionStorage('utm_source') || '',
+    utm_medium: urlParams.get('utm_medium') || getSessionStorage('utm_medium') || '',
     utm_term: urlParams.get('utm_term') || getSessionStorage('utm_term') || '',
     utm_content: urlParams.get('utm_content') || getSessionStorage('utm_content') || ''
   };
@@ -57,9 +57,9 @@ function getSessionStorage(key) {
  */
 function getDefaultUTMParams() {
   return {
-    utm_campaign: 'direct',
-    utm_source: 'direct',
-    utm_medium: 'none',
+    utm_campaign: '',
+    utm_source: '',
+    utm_medium: '',
     utm_term: '',
     utm_content: ''
   };

@@ -8,6 +8,7 @@ export class EventTracker {
     this.logger = logger;
     this.sentEvents = new Map();
     this.utmParams = null;
+    this.conversionRulesApplied = false;
     
     // Initialize and store UTM parameters
     this.initializeUTMParams();
@@ -41,7 +42,8 @@ export class EventTracker {
       'custom_event': 'click',
       'session_end': 'conversion',
       'button_click': 'click',
-      'form_submit': 'conversion'
+      'form_submit': 'conversion',
+      'conversion': 'conversion' // ✅ Add explicit conversion mapping
     };
 
     const mappedEventType = eventTypeMapping[event] || 'click';
@@ -78,6 +80,11 @@ export class EventTracker {
 
     this.logger.log('Sending v2 event:', payload);
     this.transport.send(payload);
+
+    // ✅ CHECK URL CONVERSIONS ON EVERY PAGE VIEW
+    if (event === 'page_view' || event === 'session_start') {
+      this.checkUrlConversions();
+    }
   }
 
   /**
@@ -103,5 +110,105 @@ export class EventTracker {
     this.utmParams = getUTMParams();
     storeUTMParams(this.utmParams);
     this.logger.log('UTM parameters refreshed:', this.utmParams);
+  }
+  applyConversionRules() {
+    const rules = this.config.get('conversionRules') || [];
+    
+    if (!rules.length) {
+      this.logger.warn('No conversion rules found. Skipping conversion tracking.');
+      return;
+    }
+
+    this.logger.log(`📋 Applying ${rules.length} conversion rules`);
+
+    // Apply click-based rules (set up event listeners)
+    rules.forEach((rule) => {
+      if (rule.type === 'click') {
+        this.trackClickConversion(rule);
+      }
+    });
+
+    // Check URL-based rules immediately
+    this.checkUrlConversions();
+
+    this.conversionRulesApplied = true;
+  }
+
+  // ✅ NEW METHOD: Check URL conversions (called on every page view)
+  checkUrlConversions() {
+    const rules = this.config.get('conversionRules') || [];
+    const urlRules = rules.filter(r => r.type === 'url');
+
+    if (urlRules.length === 0) return;
+
+    const currentUrl = window.location.href;
+    const currentPath = window.location.pathname;
+
+    this.logger.log('🔍 Checking URL conversions for:', currentPath);
+
+    urlRules.forEach((rule) => {
+      let matched = false;
+      const pattern = rule.pattern;
+
+      switch (rule.match_type) {
+        case 'contains':
+          matched = currentUrl.includes(pattern) || currentPath.includes(pattern);
+          break;
+        case 'exact':
+          matched = currentUrl === pattern || currentPath === pattern;
+          break;
+        case 'starts_with':
+          matched = currentUrl.startsWith(pattern) || currentPath.startsWith(pattern);
+          break;
+        case 'ends_with':
+          matched = currentUrl.endsWith(pattern) || currentPath.endsWith(pattern);
+          break;
+        case 'regex':
+          try {
+            const regex = new RegExp(pattern);
+            matched = regex.test(currentUrl) || regex.test(currentPath);
+          } catch (e) {
+            this.logger.error('Invalid regex pattern:', pattern, e);
+          }
+          break;
+      }
+
+      if (matched) {
+        this.logger.log('🎯 URL conversion matched:', rule);
+        this.send('conversion', {
+          conversion_type: 'url',
+          conversion_label: rule.name,
+          conversion_url: currentUrl,
+          conversion_rule_id: rule.id,
+          match_type: rule.match_type,
+          pattern: pattern
+        });
+      }
+    });
+  }
+
+  trackUrlConversion(rule) {
+    // This is now handled by checkUrlConversions()
+    this.logger.warn('trackUrlConversion is deprecated, use checkUrlConversions instead');
+  }
+
+  trackClickConversion(rule) {
+    this.logger.log('Setting up click conversion listener for:', rule.selector);
+    
+    document.addEventListener('click', (event) => {
+      const target = event.target.closest(rule.selector);
+      
+      if (target) {
+        this.logger.log('🎯 Click conversion matched:', rule);
+        this.send('conversion', {
+          conversion_type: 'click',
+          conversion_label: rule.name,
+          conversion_selector: rule.selector,
+          conversion_element: target.tagName,
+          conversion_rule_id: rule.id,
+          element_text: target.innerText?.substring(0, 100)
+        });
+      }
+    });
   }
 }
