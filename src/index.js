@@ -72,11 +72,10 @@ class CarbonCutSDK {
       this.logger.error(
         "Tracker token is missing. Cannot fetch conversion rules."
       );
-      return;
+      return false; // Stop further processing
     }
 
     try {
-      // Fix: Use correct endpoint path
       const configUrl = `${apiUrl.replace(
         "/events/",
         "/keys/config"
@@ -99,20 +98,24 @@ class CarbonCutSDK {
 
       const data = await response.json();
 
-      if (data.success) {
-        this.conversionRules = data.conversion_rules || [];
-        this.config.set("conversionRules", this.conversionRules);
-        this.logger.log("✅ Fetched conversion rules:", this.conversionRules);
-
-        // Apply rules after fetching
-        if (this.eventTracker && this.conversionRules.length > 0) {
-          this.eventTracker.applyConversionRules();
-        }
-      } else {
-        this.logger.warn("Failed to fetch conversion rules:", data.error);
+      if (!data.success) {
+        this.logger.error("Invalid API key:", trackerToken);
+        return false; // Stop further processing
       }
+
+      this.conversionRules = data.conversion_rules || [];
+      this.config.set("conversionRules", this.conversionRules);
+      this.logger.log("✅ Fetched conversion rules:", this.conversionRules);
+
+      // Apply rules after fetching
+      if (this.eventTracker && this.conversionRules.length > 0) {
+        this.eventTracker.applyConversionRules();
+      }
+
+      return true; // API key is valid
     } catch (error) {
       this.logger.error("Error fetching conversion rules:", error);
+      return false; // Stop further processing
     }
   }
 
@@ -152,87 +155,74 @@ class CarbonCutSDK {
   }
 
   async init(options = {}) {
-    if (!isBrowser()) {
-      this.logger.error(
-        "CarbonCut SDK can only be initialized in a browser environment"
-      );
-      return false;
-    }
-
-    if (this.state.get("isInitialized")) {
-      this.logger.warn("CarbonCut is already initialized");
-      return false;
-    }
-
-    if (!this.config.init(options)) {
-      return false;
-    }
-
-    this.logger.setDebug(this.config.get("debug"));
-
-    if (this.config.get("respectDoNotTrack") && navigator.doNotTrack === "1") {
-      this.logger.warn("Do Not Track is enabled, tracking disabled");
-      return false;
-    }
-
-    this.session = new Session(this.config, this.logger);
-
-    const useWorker = this.config.get("useWorker") !== false;
-
-    if (useWorker && typeof Worker !== "undefined") {
-      this.transport = new ApiWorkerTransport(this.config, this.logger);
-      this.logger.log("Using Web Worker for v2 event processing");
-    } else {
-      this.transport = new ApiTransport(this.config, this.logger);
-      this.logger.log("Using main thread for v2 event processing");
-    }
-
-    this.eventTracker = new EventTracker(
-      this.config,
-      this.session,
-      this.transport,
-      this.logger
-    );
-    this.pingTracker = new PingTracker(
-      this.config,
-      this.state,
-      this.eventTracker,
-      this.logger
-    );
-    this.pageViewTracker = new PageViewTracker(
-      this.config,
-      this.state,
-      this.eventTracker,
-      this.logger
-    );
-    this.browserListeners = new BrowserListeners(
-      this.config,
-      this.state,
-      this.session,
-      this.eventTracker,
-      this.pingTracker,
-      this.pageViewTracker,
-      this.logger
-    );
-
-    this.session.start();
-    this.eventTracker.send("session_start", getBrowserMetadata());
-    this.pingTracker.start();
-    this.browserListeners.setup();
-    this.state.set("isInitialized", true);
-
-    this.logger.log("CarbonCut SDK v2 initialized successfully", {
-      sessionId: this.session.getId(),
-      trackerToken: this.config.get("trackerToken"),
-      workerEnabled: useWorker,
-      apiVersion: "v2",
-    });
-
-    // ✅ FETCH AND APPLY CONVERSION RULES AFTER INITIALIZATION
-    await this.fetchConversionRules();
-
-    return true;
+  if (!isBrowser()) {
+    this.logger.error("CarbonCut SDK can only be initialized in a browser environment");
+    return false;
   }
+
+  if (this.state.get("isInitialized")) {
+    this.logger.warn("CarbonCut is already initialized");
+    return false;
+  }
+
+  if (!this.config.init(options)) {
+    return false;
+  }
+
+  this.logger.setDebug(this.config.get("debug"));
+
+  if (this.config.get("respectDoNotTrack") && navigator.doNotTrack === "1") {
+    this.logger.warn("Do Not Track is enabled, tracking disabled");
+    return false;
+  }
+
+  // Validate API key
+  const isValidApiKey = await this.fetchConversionRules();
+  if (!isValidApiKey) {
+    this.logger.error("Initialization aborted due to invalid API key.");
+    return false; // Stop further processing
+  }
+
+  this.session = new Session(this.config, this.logger);
+
+  const useWorker = this.config.get("useWorker") !== false;
+
+  if (useWorker && typeof Worker !== "undefined") {
+    this.transport = new ApiWorkerTransport(this.config, this.logger);
+    this.logger.log("Using Web Worker for v2 event processing");
+  } else {
+    this.transport = new ApiTransport(this.config, this.logger);
+    this.logger.log("Using main thread for v2 event processing");
+  }
+
+  this.eventTracker = new EventTracker(this.config, this.session, this.transport, this.logger);
+  this.pingTracker = new PingTracker(this.config, this.state, this.eventTracker, this.logger);
+  this.pageViewTracker = new PageViewTracker(this.config, this.state, this.eventTracker, this.logger);
+  this.browserListeners = new BrowserListeners(
+    this.config,
+    this.state,
+    this.session,
+    this.eventTracker,
+    this.pingTracker,
+    this.pageViewTracker,
+    this.logger
+  );
+
+  this.session.start();
+  this.eventTracker.send("session_start", getBrowserMetadata());
+  this.pingTracker.start();
+  this.browserListeners.setup();
+  this.state.set("isInitialized", true);
+
+  this.logger.log("CarbonCut SDK v2 initialized successfully", {
+    sessionId: this.session.getId(),
+    trackerToken: this.config.get("trackerToken"),
+    workerEnabled: useWorker,
+    apiVersion: "v2",
+  });
+
+  return true;
+}
 
   trackEvent(eventName, data = {}) {
     if (!this.state.get("isInitialized")) {
