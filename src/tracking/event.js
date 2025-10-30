@@ -33,12 +33,12 @@ export class EventTracker {
       this.logger.error("Cannot send event without active session");
       return;
     }
-    if (!this.state.get("isInitialized")) {
-      this.logger.error(
-        "Cannot send event: SDK is not initialized or API key is invalid."
-      );
-      return false;
-    }
+    // if (!this.state.get("isInitialized")) {
+    //   this.logger.error(
+    //     "Cannot send event: SDK is not initialized or API key is invalid."
+    //   );
+    //   return false;
+    // }
     const eventTypeMapping = {
       session_start: "page_view",
       page_view: "page_view",
