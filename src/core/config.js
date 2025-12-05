@@ -15,6 +15,14 @@ export class Config {
       maxRetries: 3,
       retryDelay: 1000,
       domain: null,
+      //   Geolocation options
+      enableGeolocation: false, 
+      requestLocation: false, 
+      geolocationTimeout: 10000, 
+      geolocationHighAccuracy: false,
+      autoRequestLocation: true,
+      //   NEW: Automatically prompt for location on SDK load
+      promptForLocationOnLoad: true, 
     };
     
     this.config = { ...this.defaults };
