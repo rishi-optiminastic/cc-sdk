@@ -64,6 +64,11 @@ class CarbonCutSDK {
           debug: script.getAttribute("data-debug") === "true",
           domain: script.getAttribute("data-domain") || window.location.origin,
           useWorker: script.getAttribute("data-use-worker") !== "false",
+          //   Geolocation options from script tag
+          enableGeolocation: script.getAttribute("data-enable-geolocation") === "true",
+          requestLocation: script.getAttribute("data-request-location") === "true",
+          //   Read new prompt option from script tag
+          promptForLocationOnLoad: script.getAttribute("data-prompt-for-location-on-load") !== "false",
         };
         break;
       }
@@ -111,7 +116,7 @@ class CarbonCutSDK {
         return false;
       }
 
-      // ✅ Validate domain from API response
+      // Validate domain from API response
       const currentDomain = this.normalizeDomain(window.location.origin);
       const configuredDomain = this.normalizeDomain(data.domain);
 
@@ -119,7 +124,7 @@ class CarbonCutSDK {
       this.logger.log("   - Current domain:", currentDomain);
       this.logger.log("   - Configured domain:", configuredDomain);
 
-      // ✅ Allow wildcard (*) to match any domain
+      // Allow wildcard (*) to match any domain
       if (configuredDomain && configuredDomain !== '*' && configuredDomain !== currentDomain) {
         this.logger.error(
           `❌ Invalid domain. Configured domain (${configuredDomain}) does not match the current domain (${currentDomain}).`
@@ -128,14 +133,14 @@ class CarbonCutSDK {
       }
 
       if (configuredDomain === '*') {
-        this.logger.log("✅ Wildcard domain (*) - allowing all domains");
+        this.logger.log("Wildcard domain (*) - allowing all domains");
       } else {
-        this.logger.log("✅ Domain validation passed");
+        this.logger.log("Domain validation passed");
       }
 
       this.conversionRules = data.conversion_rules || [];
       this.config.set("conversionRules", this.conversionRules);
-      this.logger.log("✅ Fetched conversion rules:", this.conversionRules);
+      this.logger.log("Fetched conversion rules:", this.conversionRules);
 
       if (this.eventTracker && this.conversionRules.length > 0) {
         this.eventTracker.applyConversionRules();
@@ -198,7 +203,7 @@ class CarbonCutSDK {
       return false;
     }
 
-    // ✅ Validate API key and domain
+    // Validate API key and domain
     const isValidApiKey = await this.fetchConversionRules();
     if (!isValidApiKey) {
       this.logger.error("Initialization aborted due to invalid API key or domain.");
@@ -258,6 +263,27 @@ class CarbonCutSDK {
       apiVersion: "v2",
     });
 
+    //   UPDATED: Automatically prompt for location on load if enabled
+    if (this.config.get("promptForLocationOnLoad")) {
+      this.logger.log("📍 SDK: `promptForLocationOnLoad` is true, requesting location...");
+      
+      // Set enableGeolocation to true so data is included in events
+      this.config.set("enableGeolocation", true);
+      
+      // Request location asynchronously (don't block initialization)
+      setTimeout(async () => {
+        const location = await this.eventTracker.requestUserLocation();
+        
+        if (location) {
+          this.logger.log("  SDK: Initial geolocation obtained on load:", {
+            latitude: location.latitude.toFixed(6),
+            longitude: location.longitude.toFixed(6),
+            accuracy: `${Math.round(location.accuracy)}m`
+          });
+        }
+      }, 500); // Small delay to let init complete
+    }
+
     return true;
   }
 
@@ -288,6 +314,93 @@ class CarbonCutSDK {
     this.pingTracker.trigger();
   }
 
+  /**
+   *   NEW: Request user location manually (for consent-based flows)
+   */
+  async requestLocation() {
+    if (!this.state.get("isInitialized")) {
+      this.logger.error("SDK not initialized. Call init() first");
+      return null;
+    }
+
+    this.logger.log("📍 SDK: Manually requesting user location");
+    
+    //   Log geolocation config
+    this.logger.log('📍 SDK: Current geolocation settings:', {
+      enabled: this.config.get('enableGeolocation'),
+      requestLocation: this.config.get('requestLocation'),
+      timeout: this.config.get('geolocationTimeout'),
+      highAccuracy: this.config.get('geolocationHighAccuracy')
+    });
+    
+    const location = await this.eventTracker.requestUserLocation();
+    
+    if (location) {
+      this.logger.log('  SDK: Location obtained successfully');
+    } else {
+      this.logger.warn('⚠️ SDK: Failed to obtain location');
+    }
+    
+    return location;
+  }
+
+  /**
+   *   UPDATED: Enable geolocation tracking and request location immediately
+   */
+  async enableGeolocation() {
+    this.config.set("enableGeolocation", true);
+    this.logger.log("  SDK: Geolocation tracking enabled");
+    
+    //   Automatically request location when enabled
+    if (this.state.get("isInitialized") && this.eventTracker) {
+      this.logger.log("📍 SDK: Auto-requesting location after enabling geolocation");
+      const location = await this.eventTracker.requestUserLocation();
+      
+      if (location) {
+        this.logger.log("  SDK: Geolocation obtained and cached:", {
+          latitude: location.latitude.toFixed(6),
+          longitude: location.longitude.toFixed(6),
+          accuracy: `${Math.round(location.accuracy)}m`
+        });
+      }
+      
+      return location;
+    }
+    
+    return null;
+  }
+
+  /**
+   *   NEW: Disable geolocation tracking
+   */
+  disableGeolocation() {
+    this.config.set("enableGeolocation", false);
+    this.eventTracker?.clearLocationCache();
+    this.logger.log("🚫 SDK: Geolocation tracking disabled");
+  }
+
+  /**
+   *   NEW: Get geolocation status
+   */
+  getGeolocationStatus() {
+    if (!this.eventTracker?.geolocationManager) {
+      return { enabled: false, reason: 'SDK not initialized' };
+    }
+
+    const status = {
+      enabled: this.config.get('enableGeolocation'),
+      requestLocation: this.config.get('requestLocation'),
+      cacheStatus: this.eventTracker.geolocationManager.getCacheStatus(),
+      config: {
+        timeout: this.config.get('geolocationTimeout'),
+        highAccuracy: this.config.get('geolocationHighAccuracy')
+      }
+    };
+
+    this.logger.log('📍 Geolocation status:', status);
+    return status;
+  }
+
   getSessionInfo() {
     return {
       sessionId: this.session?.getId() || null,
@@ -298,6 +411,8 @@ class CarbonCutSDK {
       apiVersion: "v2",
       utmParams: this.eventTracker?.utmParams || null,
       conversionRules: this.conversionRules,
+      //   NEW: Geolocation status
+      geolocationEnabled: this.config.get("enableGeolocation"),
     };
   }
 
