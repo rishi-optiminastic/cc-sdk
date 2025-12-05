@@ -1,4 +1,6 @@
 import { getUTMParams, storeUTMParams, generateEventId } from "../utils/utm.js";
+import { PerformanceMonitor } from "../utils/performance.js";
+import { GeolocationManager } from "../utils/geolocation.js";
 
 export class EventTracker {
   constructor(config, session, transport, logger) {
@@ -10,8 +12,25 @@ export class EventTracker {
     this.utmParams = null;
     this.conversionRulesApplied = false;
 
+    // Add performance monitor
+    this.performanceMonitor = new PerformanceMonitor(logger);
+    
+    //   Add geolocation manager
+    this.geolocationManager = new GeolocationManager(logger);
+    
+    this.bytesTracked = {
+      pageView: 0,
+      clicks: 0,
+      conversions: 0,
+      total: 0
+    };
+
+    // Track last event timestamp for calculating request bytes
+    this.lastEventTime = Date.now();
+
     // Initialize and store UTM parameters
     this.initializeUTMParams();
+    this.setupPerformanceTracking();
   }
 
   /**
@@ -24,21 +43,116 @@ export class EventTracker {
   }
 
   /**
-   * Send event with new v2 format
+   * Setup performance tracking for API requests
+   */
+  setupPerformanceTracking() {
+    this.performanceObserver = this.performanceMonitor.observeTrackingBytes(
+      (data) => {
+        this.logger.log("📊 Tracking request bytes:", data);
+
+        // Aggregate bytes by event type
+        if (data.url.includes("page_view")) {
+          this.bytesTracked.pageView += data.bytes;
+        } else if (data.url.includes("click")) {
+          this.bytesTracked.clicks += data.bytes;
+        } else if (data.url.includes("conversion")) {
+          this.bytesTracked.conversions += data.bytes;
+        }
+        
+        this.bytesTracked.total += data.bytes;
+      }
+    );
+  }
+
+  /**
+   * Get bytes for the tracking request itself
+   */
+  async getTrackingRequestBytes(eventId) {
+    // Wait a bit for the request to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const requestBytes = this.performanceMonitor.getRequestByEventId(eventId);
+    return requestBytes?.bytes || 0;
+  }
+
+  /**
+   * Calculate estimated request size
+   */
+  estimateRequestSize(payload) {
+    const jsonString = JSON.stringify(payload);
+    const bodyBytes = new Blob([jsonString]).size;
+    
+    // Estimate HTTP headers (~800-1000 bytes)
+    const estimatedHeaders = 850;
+    
+    return {
+      bodyBytes,
+      estimatedTotal: bodyBytes + estimatedHeaders,
+      actualJson: jsonString
+    };
+  }
+
+  /**
+   * Get geolocation data if enabled
+   */
+  async getGeolocationData() {
+    const enableGeolocation = this.config.get('enableGeolocation');
+    const requestLocation = this.config.get('requestLocation');
+
+    //   Log geolocation configuration
+    this.logger.log('📍 Geolocation configuration:', {
+      enableGeolocation,
+      requestLocation,
+      timeout: this.config.get('geolocationTimeout'),
+      highAccuracy: this.config.get('geolocationHighAccuracy')
+    });
+
+    if (!enableGeolocation && !requestLocation) {
+      this.logger.log('📍 Geolocation disabled, skipping');
+      return null;
+    }
+
+    //   Check cache status before requesting
+    const cacheStatus = this.geolocationManager.getCacheStatus();
+    this.logger.log('📍 Cache status before request:', cacheStatus);
+
+    try {
+      const location = await this.geolocationManager.getCurrentLocation({
+        enableHighAccuracy: this.config.get('geolocationHighAccuracy'),
+        timeout: this.config.get('geolocationTimeout')
+      });
+
+      if (location) {
+        //   Log successful geolocation retrieval
+        this.logger.log('  Geolocation data ready for event:', {
+          latitude: location.latitude.toFixed(6),
+          longitude: location.longitude.toFixed(6),
+          accuracy: `${Math.round(location.accuracy)}m`,
+          fromCache: cacheStatus.isValid,
+          timestamp: new Date(location.timestamp).toISOString()
+        });
+      } else {
+        this.logger.warn('⚠️ Geolocation returned null');
+      }
+
+      return location;
+    } catch (error) {
+      this.logger.error('❌ Failed to get geolocation:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Send event with byte tracking
    * @param {string} event Event type
    * @param {Object} data Additional event data
    */
-  send(event, data = {}) {
+  async send(event, data = {}) {
     if (!this.session.isActive()) {
       this.logger.error("Cannot send event without active session");
       return;
     }
-    // if (!this.state.get("isInitialized")) {
-    //   this.logger.error(
-    //     "Cannot send event: SDK is not initialized or API key is invalid."
-    //   );
-    //   return false;
-    // }
+
     const eventTypeMapping = {
       session_start: "page_view",
       page_view: "page_view",
@@ -53,15 +167,55 @@ export class EventTracker {
     const mappedEventType = eventTypeMapping[event] || "click";
     const eventId = generateEventId();
 
+    // Get performance data based on event type
+    let performanceData = {};
+    
+    if (event === "session_start") {
+      // Initial page load - use Navigation Timing API
+      const pageBytes = this.performanceMonitor.getPageViewBytes();
+      if (pageBytes) {
+        performanceData = {
+          bytesPerPageView: pageBytes.transferSize,
+          encodedSize: pageBytes.encodedBodySize,
+          decodedSize: pageBytes.decodedBodySize,
+          resourceType: 'navigation'
+        };
+      }
+    } else {
+      // For all other events, get resources + tracking request bytes
+      const resourceBytes = this.performanceMonitor.getResourcesBytesSince(this.lastEventTime);
+      
+      performanceData = {
+        resourceCount: resourceBytes.count,
+        resourceTypes: resourceBytes.byType,
+        resourceType: 'dynamic'
+      };
+
+      // Add event-specific byte fields
+      if (event === "page_view" || event === "ping") {
+        performanceData.bytesPerPageView = resourceBytes.total;
+      } else if (event === "button_click" || mappedEventType === "click") {
+        performanceData.bytesPerClick = resourceBytes.total;
+      } else if (mappedEventType === "conversion") {
+        performanceData.bytesPerConversion = resourceBytes.total;
+      }
+    }
+
+    //   NEW: Get geolocation data (only for session_start and conversions by default)
+    let geolocationData = null;
+    if (event === "session_start" || event === "conversion") {
+      geolocationData = await this.getGeolocationData();
+    }
+
     // Build v2 payload format
     const payload = {
-      event: mappedEventType, // Maps to event_type in backend
+      event: mappedEventType,
       session_id: this.session.getId(),
-      timestamp: new Date().toISOString(), // Maps to event_time in backend
-      tracker_token: this.config.get("trackerToken"), // Maps to api_key in backend
-      utm_params: this.utmParams, // MANDATORY for campaign resolution
+      timestamp: new Date().toISOString(),
+      tracker_token: this.config.get("trackerToken"),
+      utm_params: this.utmParams,
       event_id: eventId,
-      user_id: data.user_id || this.session.getId(), // Use session as fallback
+      user_id: data.user_id || this.session.getId(),
       page_url:
         typeof window !== "undefined"
           ? window.location.href
@@ -70,8 +224,20 @@ export class EventTracker {
         typeof document !== "undefined"
           ? document.referrer
           : data.referrer || "",
-      ...data, // Additional event-specific data
+      ...performanceData,
+      ...(geolocationData && { 
+        geolocation: geolocationData,
+        latitude: geolocationData.latitude,
+        longitude: geolocationData.longitude,
+        location_accuracy: geolocationData.accuracy
+      }),
+      ...data,
     };
+
+    // Add estimated tracking request size
+    const requestSize = this.estimateRequestSize(payload);
+    payload.trackingRequestBytes = requestSize.estimatedTotal;
+    payload.trackingRequestBody = requestSize.bodyBytes;
 
     // Prevent duplicate events
     const eventKey = `${event}_${payload.timestamp}_${JSON.stringify(data)}`;
@@ -88,10 +254,27 @@ export class EventTracker {
       this.sentEvents.delete(eventKey);
     }, 2000);
 
-    this.logger.log("Sending v2 event:", payload);
+    this.logger.log("📤 Sending event with performance data:", {
+      event: mappedEventType,
+      bytes: performanceData,
+      requestSize: requestSize.estimatedTotal,
+      hasGeolocation: !!geolocationData
+    });
+    
     this.transport.send(payload);
 
-    // ✅ CHECK URL CONVERSIONS ON EVERY PAGE VIEW
+    // Update last event time AFTER sending
+    setTimeout(() => {
+      this.lastEventTime = Date.now();
+      
+      // Update byte tracking after request completes
+      const latestBytes = this.performanceMonitor.getLatestTrackingRequestBytes();
+      if (latestBytes > 0) {
+        this.logger.log(`  Captured ${latestBytes} bytes for ${event} event`);
+      }
+    }, 100);
+
+    // CHECK URL CONVERSIONS ON EVERY PAGE VIEW
     if (event === "page_view" || event === "session_start") {
       this.checkUrlConversions();
     }
@@ -146,7 +329,7 @@ export class EventTracker {
     this.conversionRulesApplied = true;
   }
 
-  // ✅ NEW METHOD: Check URL conversions (called on every page view)
+  //  NEW METHOD: Check URL conversions (called on every page view)
   checkUrlConversions() {
     const rules = this.config.get("conversionRules") || [];
     const urlRules = rules.filter((r) => r.type === "url");
@@ -227,5 +410,48 @@ export class EventTracker {
         });
       }
     });
+  }
+
+  /**
+   * Get aggregated bytes by event type
+   */
+  getBytesTracked() {
+    return {
+      ...this.bytesTracked,
+      total: Object.values(this.bytesTracked).reduce((a, b) => a + b, 0),
+    };
+  }
+
+  /**
+   *   NEW: Manually request location (useful for opt-in consent)
+   */
+  async requestUserLocation() {
+    this.logger.log('📍 Manual location request initiated');
+    
+    // Log current permission status
+    const hasPermission = await this.geolocationManager.checkPermission();
+    this.logger.log('📍 Current permission status:', hasPermission ? 'granted' : 'not granted');
+    
+    const location = await this.geolocationManager.getCurrentLocation();
+    
+    if (location) {
+      this.logger.log('  Manual location request successful:', {
+        latitude: location.latitude.toFixed(6),
+        longitude: location.longitude.toFixed(6),
+        accuracy: `${Math.round(location.accuracy)}m`
+      });
+      return location;
+    } else {
+      this.logger.warn('❌ Manual location request failed');
+      return null;
+    }
+  }
+
+  /**
+   *   NEW: Clear location cache
+   */
+  clearLocationCache() {
+    this.logger.log('🗑️ Clearing location cache...');
+    this.geolocationManager.clearCache();
   }
 }
