@@ -124,7 +124,7 @@ export class EventTracker {
 
       if (location) {
         //   Log successful geolocation retrieval
-        this.logger.log('  Geolocation data ready for event:', {
+        this.logger.log('Geolocation data ready for event:', {
           latitude: location.latitude.toFixed(6),
           longitude: location.longitude.toFixed(6),
           accuracy: `${Math.round(location.accuracy)}m`,
@@ -154,7 +154,7 @@ export class EventTracker {
     }
 
     const eventTypeMapping = {
-      session_start: "page_view",
+      session_start: "session_start",  
       page_view: "page_view",
       ping: "page_view",
       custom_event: "click",
@@ -270,7 +270,7 @@ export class EventTracker {
       // Update byte tracking after request completes
       const latestBytes = this.performanceMonitor.getLatestTrackingRequestBytes();
       if (latestBytes > 0) {
-        this.logger.log(`  Captured ${latestBytes} bytes for ${event} event`);
+        this.logger.log(`Captured ${latestBytes} bytes for ${event} event`);
       }
     }, 100);
 

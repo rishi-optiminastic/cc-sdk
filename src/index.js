@@ -251,7 +251,6 @@ class CarbonCutSDK {
     );
 
     this.session.start();
-    this.eventTracker.send("session_start", getBrowserMetadata());
     this.pingTracker.start();
     this.browserListeners.setup();
     this.state.set("isInitialized", true);
@@ -263,16 +262,18 @@ class CarbonCutSDK {
       apiVersion: "v2",
     });
 
-    //   UPDATED: Automatically prompt for location on load if enabled
+    //   UPDATED: Request location BEFORE sending session_start
     if (this.config.get("promptForLocationOnLoad")) {
       this.logger.log("📍 SDK: `promptForLocationOnLoad` is true, requesting location...");
       
       // Set enableGeolocation to true so data is included in events
       this.config.set("enableGeolocation", true);
       
-      // Request location asynchronously (don't block initialization)
-      setTimeout(async () => {
-        const location = await this.eventTracker.requestUserLocation();
+      try {
+        const location = await Promise.race([
+          this.eventTracker.requestUserLocation(),
+          new Promise(resolve => setTimeout(() => resolve(null), 5000)) 
+        ]);
         
         if (location) {
           this.logger.log("  SDK: Initial geolocation obtained on load:", {
@@ -280,9 +281,16 @@ class CarbonCutSDK {
             longitude: location.longitude.toFixed(6),
             accuracy: `${Math.round(location.accuracy)}m`
           });
+        } else {
+          this.logger.warn("⚠️ SDK: Geolocation timeout or denied, proceeding without location");
         }
-      }, 500); // Small delay to let init complete
+      } catch (error) {
+        this.logger.error("❌ SDK: Error getting location:", error);
+      }
     }
+
+    //   Send session_start AFTER geolocation attempt
+    await this.eventTracker.send("session_start", getBrowserMetadata());
 
     return true;
   }

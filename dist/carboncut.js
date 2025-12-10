@@ -265,6 +265,31 @@ var CarbonCut = (function () {
       });
     }
 
+    /**
+     * ✅ NEW: Convert payload to URL query parameters (like Google Analytics)
+     */
+    buildQueryString(payload) {
+      const params = new URLSearchParams();
+      
+      // Flatten the payload into query parameters
+      Object.entries(payload).forEach(([key, value]) => {
+        if (value === null || value === undefined) {
+          return; // Skip null/undefined
+        }
+        
+        if (typeof value === 'object' && !Array.isArray(value)) {
+          // Stringify nested objects (utm_params, resourceTypes, geolocation, etc.)
+          params.append(key, JSON.stringify(value));
+        } else if (Array.isArray(value)) {
+          params.append(key, JSON.stringify(value));
+        } else {
+          params.append(key, String(value));
+        }
+      });
+      
+      return params.toString();
+    }
+
     async send(payload) {
       if (!this.isOnline) {
         this.logger.warn('Offline, queueing event');
@@ -275,6 +300,7 @@ var CarbonCut = (function () {
       const apiUrl = this.config.get('apiUrl');
       
       try {
+        // ✅ Use sendBeacon for critical events (still uses POST with blob)
         if (this.shouldUseSendBeacon(payload.event)) {
           const success = this.sendViaBeacon(apiUrl, payload);
           if (success) {
@@ -283,8 +309,9 @@ var CarbonCut = (function () {
           }
         }
 
-        const response = await this.sendViaFetch(apiUrl, payload);
-        this.logger.log('Event sent via fetch:', payload.event, 'Status:', response.status);
+        // ✅ Use GET request for all other events
+        const response = await this.sendViaGet(apiUrl, payload);
+        this.logger.log('Event sent via GET:', payload.event, 'Status:', response.status);
         return true;
 
       } catch (error) {
@@ -294,6 +321,42 @@ var CarbonCut = (function () {
       }
     }
 
+    async sendViaGet(url, payload) {
+      // Remove trailing slash for query parameters
+      let baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+      
+      // Build query string
+      const queryString = this.buildQueryString(payload);
+      const fullUrl = `${baseUrl}?${queryString}`;
+      
+      this.logger.log('📡 GET Request URL (first 200 chars):', fullUrl.substring(0, 200));
+      
+      const response = await fetch(fullUrl, {
+        method: 'GET',
+        headers: {
+          'X-Tracker-Token': this.config.get('trackerToken')
+        },
+        keepalive: true,
+        redirect: 'error'
+      });
+
+      if (response.status === 202 || response.status === 200) {
+        return response;
+      } else if (response.status === 500) {
+        try {
+          const errorData = await response.json();
+          throw new Error(`API Error: ${errorData.message || 'Unknown error'}`);
+        } catch (parseError) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+      } else {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+    }
+
+    /**
+     * sendBeacon for critical events (page unload) - still uses POST with blob
+     */
     sendViaBeacon(url, payload) {
       if (typeof navigator === 'undefined' || !navigator.sendBeacon) {
         return false;
@@ -307,40 +370,6 @@ var CarbonCut = (function () {
       } catch (error) {
         this.logger.error('sendBeacon failed:', error);
         return false;
-      }
-    }
-
-    async sendViaFetch(url, payload) {
-      if (!url.endsWith('/')) {
-        url = url + '/';
-      }
-      
-      this.logger.log('Sending payload to:', url, payload);
-      
-      const response = await fetch(url, {
-        method: 'POST',  // Explicitly set POST
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Tracker-Token': this.config.get('trackerToken')
-        },
-        body: JSON.stringify(payload),
-        keepalive: true,
-        redirect: 'error'  // Don't follow redirects that might change method
-      });
-
-      // Handle responses
-      if (response.status === 202 || response.status === 200) {
-        return response;
-      } else if (response.status === 500) {
-        // Parse error details
-        try {
-          const errorData = await response.json();
-          throw new Error(`API Error: ${errorData.message || 'Unknown error'}`);
-        } catch (parseError) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-      } else {
-        throw new Error(`HTTP error! status: ${response.status}`);
       }
     }
 
@@ -429,6 +458,25 @@ var CarbonCut = (function () {
       let flushTimer = null;
       let isOnline = true;
 
+      // ✅ Add query string builder
+      function buildQueryString(payload) {
+        const params = new URLSearchParams();
+        
+        Object.entries(payload).forEach(([key, value]) => {
+          if (value === null || value === undefined) return;
+          
+          if (typeof value === 'object' && !Array.isArray(value)) {
+            params.append(key, JSON.stringify(value));
+          } else if (Array.isArray(value)) {
+            params.append(key, JSON.stringify(value));
+          } else {
+            params.append(key, String(value));
+          }
+        });
+        
+        return params.toString();
+      }
+
       self.addEventListener('message', async (event) => {
         const { type, payload } = event.data;
 
@@ -478,23 +526,22 @@ var CarbonCut = (function () {
         eventQueue = [];
         
         try {
-          // Send individual events
+          // ✅ Send individual events via GET
           for (const event of batch) {
-            // Ensure URL always has trailing slash
-            let url = config.apiUrl;
-            if (!url.endsWith('/')) {
-              url = url + '/';
-            }
+            let baseUrl = config.apiUrl.endsWith('/') 
+              ? config.apiUrl.slice(0, -1) 
+              : config.apiUrl;
             
-            const response = await fetch(url, {
-              method: 'POST',  // Explicitly set POST
+            const queryString = buildQueryString(event);
+            const fullUrl = \`\${baseUrl}?\${queryString}\`;
+            
+            const response = await fetch(fullUrl, {
+              method: 'GET',
               headers: {
-                'Content-Type': 'application/json',
                 'X-Tracker-Token': config.trackerToken
               },
-              body: JSON.stringify(event),
               keepalive: true,
-              redirect: 'error'  // Don't follow redirects
+              redirect: 'error'
             });
             
             if (response.status !== 202 && response.status !== 200) {
@@ -516,15 +563,16 @@ var CarbonCut = (function () {
       
       switch (type) {
         case 'INIT_SUCCESS':
-          this.logger.log('Worker ready for v2 API');
+          this.logger.log('Worker ready for v2 API (GET requests)');
           break;
         
         case 'FLUSH_SUCCESS':
-          this.logger.log(`Worker flushed ${count} v2 events`);
+          this.logger.log(`Worker flushed ${count} events successfully via GET`);
+          this.queueSize = Math.max(0, this.queueSize - count);
           break;
         
         case 'FLUSH_ERROR':
-          this.logger.error(`Worker flush failed: ${error}`);
+          this.logger.error(`Worker flush failed for ${count} events:`, error);
           break;
         
         case 'QUEUE_SIZE':
@@ -534,55 +582,41 @@ var CarbonCut = (function () {
     }
 
     setupOnlineListener() {
+      if (typeof window === 'undefined') return;
+
       window.addEventListener('online', () => {
+        this.logger.log('Connection restored, notifying worker');
         this.worker?.postMessage({ type: 'ONLINE' });
       });
 
       window.addEventListener('offline', () => {
+        this.logger.warn('Connection lost, notifying worker');
         this.worker?.postMessage({ type: 'OFFLINE' });
       });
     }
 
-    async send(payload) {
+    send(payload) {
       if (!this.worker) {
-        return this.sendDirect(payload);
+        this.logger.error('Worker not initialized');
+        return false;
       }
-      
+
       this.worker.postMessage({
         type: 'TRACK_EVENT',
         payload
       });
       
+      this.queueSize++;
       return true;
     }
 
-    async sendDirect(payload) {
-      try {
-        const response = await fetch(this.config.get('apiUrl'), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Tracker-Token': this.config.get('trackerToken')
-          },
-          body: JSON.stringify(payload),
-          keepalive: true
-        });
-        
-        return response.status === 202;
-      } catch (error) {
-        this.logger.error('Direct send failed:', error);
-        return false;
-      }
-    }
-
-    async flushQueue() {
-      this.worker?.postMessage({ type: 'FLUSH_QUEUE' });
+    flush() {
+      if (!this.worker) return;
+      
+      this.worker.postMessage({ type: 'FLUSH_QUEUE' });
     }
 
     getQueueSize() {
-      if (!this.worker) return 0;
-      
-      this.worker.postMessage({ type: 'GET_QUEUE_SIZE' });
       return this.queueSize;
     }
 
@@ -1335,7 +1369,7 @@ var CarbonCut = (function () {
 
         if (location) {
           //   Log successful geolocation retrieval
-          this.logger.log('  Geolocation data ready for event:', {
+          this.logger.log('Geolocation data ready for event:', {
             latitude: location.latitude.toFixed(6),
             longitude: location.longitude.toFixed(6),
             accuracy: `${Math.round(location.accuracy)}m`,
@@ -1365,7 +1399,7 @@ var CarbonCut = (function () {
       }
 
       const eventTypeMapping = {
-        session_start: "page_view",
+        session_start: "session_start",  
         page_view: "page_view",
         ping: "page_view",
         custom_event: "click",
@@ -1481,7 +1515,7 @@ var CarbonCut = (function () {
         // Update byte tracking after request completes
         const latestBytes = this.performanceMonitor.getLatestTrackingRequestBytes();
         if (latestBytes > 0) {
-          this.logger.log(`  Captured ${latestBytes} bytes for ${event} event`);
+          this.logger.log(`Captured ${latestBytes} bytes for ${event} event`);
         }
       }, 100);
 
@@ -2103,7 +2137,6 @@ var CarbonCut = (function () {
       );
 
       this.session.start();
-      this.eventTracker.send("session_start", getBrowserMetadata());
       this.pingTracker.start();
       this.browserListeners.setup();
       this.state.set("isInitialized", true);
@@ -2115,16 +2148,18 @@ var CarbonCut = (function () {
         apiVersion: "v2",
       });
 
-      //   UPDATED: Automatically prompt for location on load if enabled
+      //   UPDATED: Request location BEFORE sending session_start
       if (this.config.get("promptForLocationOnLoad")) {
         this.logger.log("📍 SDK: `promptForLocationOnLoad` is true, requesting location...");
         
         // Set enableGeolocation to true so data is included in events
         this.config.set("enableGeolocation", true);
         
-        // Request location asynchronously (don't block initialization)
-        setTimeout(async () => {
-          const location = await this.eventTracker.requestUserLocation();
+        try {
+          const location = await Promise.race([
+            this.eventTracker.requestUserLocation(),
+            new Promise(resolve => setTimeout(() => resolve(null), 5000)) 
+          ]);
           
           if (location) {
             this.logger.log("  SDK: Initial geolocation obtained on load:", {
@@ -2132,9 +2167,16 @@ var CarbonCut = (function () {
               longitude: location.longitude.toFixed(6),
               accuracy: `${Math.round(location.accuracy)}m`
             });
+          } else {
+            this.logger.warn("⚠️ SDK: Geolocation timeout or denied, proceeding without location");
           }
-        }, 500); // Small delay to let init complete
+        } catch (error) {
+          this.logger.error("❌ SDK: Error getting location:", error);
+        }
       }
+
+      //   Send session_start AFTER geolocation attempt
+      await this.eventTracker.send("session_start", getBrowserMetadata());
 
       return true;
     }
